@@ -139,3 +139,7 @@ def list_contributions(group_id: int, current_user: User = Depends(get_current_u
     contributions = db.query(Contribution).filter(Contribution.group_id == group_id).all()
     return contributions
 
+@app.get("/groups/")
+def list_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    groups = db.query(Group).all()
+    return groups
