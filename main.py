@@ -49,6 +49,7 @@ class Contribution(Base):
     amount = Column(Integer)
     contribution_date = Column(String, default=datetime.utcnow)    
     
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
@@ -69,6 +70,17 @@ def get_current_user(authorization: str = Header(...), db: Session = Depends(get
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     return user        
 
+@app.post("/register/")
+def register_user(firebase_uid: str, full_name: str, phone: str, db: Session = Depends(get_db)):
+    existing_user = db.query(User).filter((User.firebase_uid == firebase_uid) | (User.phone == phone)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="User with given Firebase UID or phone already exists")
+    
+    user = User(firebase_uid=firebase_uid, full_name=full_name, phone=phone)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
 
 @app.post("/groups/")
 def create_group(name: str, description: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
