@@ -155,3 +155,18 @@ def list_contributions(group_id: int, current_user: User = Depends(get_current_u
 def list_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     groups = db.query(Group).all()
     return groups
+
+@app.get("/test/users/")
+def list_users(db: Session = Depends(get_db)):
+    users = db.query(User).all()
+    return users
+
+@app.get("/test/groups/")
+def list_all_groups(db: Session = Depends(get_db)):
+    groups = db.query(Group).all()
+    return groups
+
+@app.get("/test/group_members/")
+def list_all_group_members(db: Session = Depends(get_db)):
+    members = db.query(GroupMember).all()
+    return members
