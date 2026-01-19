@@ -61,6 +61,7 @@ class UserCreate(BaseModel):
 class GroupCreate(BaseModel):
     name: str
     description: str
+    firebase_uid: str
 
 app = FastAPI()
 
@@ -98,17 +99,35 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
 
 @app.post("/groups/")
 def create_group(group: GroupCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    group = Group(name=group.name, description=group.description, created_by=current_user.id)
-    db.add(group)
+    db_group = db.query(Group).filter(Group.name == group.name).first()
+    user = db.query(User).filter(User.firebase_uid == group.firebase_uid).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if db_group:
+        raise HTTPException(status_code=400, detail="Group name already exists")    
+    
+    new_group = Group(
+        name=group.name,
+        description=group.description,
+        created_by=current_user.id
+    )
+
+    db.add(new_group)
     db.commit()
-    db.refresh(group)
-    
-    Member = GroupMember(group_id=group.id, user_id=current_user.id)
-    db.add(Member)
+    db.refresh(new_group)
+
+    member = GroupMember(group_id=new_group.id, user_id=current_user.id)
+    db.add(member)
     db.commit()
-    
-    
-    return group
+    db.refresh(member)
+
+    return {
+        "id": new_group.id,
+        "name": new_group.name,
+        "description": new_group.description,
+        "created_at": new_group.created_at,
+        "created_by": new_group.created_by
+    }
 
 
 @app.post("/groups/{group_id}/members/")
