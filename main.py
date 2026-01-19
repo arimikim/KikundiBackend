@@ -75,7 +75,7 @@ def get_db():
  
  
 def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)):
-    firebase_uid = authorization.replace("Bearer ", "")
+    firebase_uid = authorization.replace("Bearer ", "").strip()
     user = db.query(User).filter(User.firebase_uid == firebase_uid).first()
     if not user:
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
