@@ -203,3 +203,8 @@ def list_all_groups(db: Session = Depends(get_db)):
 def list_all_group_members(db: Session = Depends(get_db)):
     members = db.query(GroupMember).all()
     return members
+
+
+@app.get("/get_current_user/")
+def get_current_user(current_user: User = Depends(get_current_user)):
+    return current_user
