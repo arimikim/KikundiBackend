@@ -169,6 +169,24 @@ def record_contribution(group_id: int, amount: int, current_user: User = Depends
     
     return contribution
 
+@app.get("/groups/", response_model=list[GroupCreate])
+def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Only fetch groups where the user is a member
+    groups = db.query(Group).all()
+    return [
+        {
+            "id": g.id,
+            "name": g.name,
+            "description": g.description,
+            "created_by": g.created_by
+        } for g in groups
+    ]
+
+
+
+
+
+
 @app.get("/groups/{group_id}/members/")
 def list_group_members(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
