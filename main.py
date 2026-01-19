@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, Header
 from sqlalchemy.orm import Session,declarative_base,sessionmaker
-from sqlalchemy import create_engine, Column, Integer, String,ForeignKey,DateTime
+from sqlalchemy import create_engine, Column, Integer, String,ForeignKey,DateTime,Boolean, UniqueConstraint
 from datetime import datetime, timedelta
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -20,22 +20,22 @@ class User(Base):
     firebase_uid = Column(String, unique=True, index=True)
     full_name = Column(String)
     phone=Column(String, unique=True, index=True)
-    created_at = Column(String, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
 class Group(Base):
     __tablename__ = "groups"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
     description = Column(String)
-    created_at = Column(String, default=datetime.utcnow)
-    created_by = Column(Integer,ForeignKey('users.id'))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(DateTime,ForeignKey('users.id'))
     
 class GroupMember(Base):
     __tablename__ = "group_members"
     id = Column(Integer, primary_key=True, index=True)
     group_id = Column(Integer, ForeignKey('groups.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
-    joined_at = Column(String, default=datetime.utcnow)   
+    joined_at = Column(DateTime, default=datetime.utcnow)   
     
 class Meeting(Base):
     __tablename__ = "meetings"
@@ -43,7 +43,7 @@ class Meeting(Base):
     group_id = Column(Integer, ForeignKey('groups.id'))
     topic = Column(String)
     meeting_datetime = Column(DateTime)
-    created_at = Column(String, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
     
 class Contribution(Base):
     __tablename__ = "contributions"
@@ -51,11 +51,42 @@ class Contribution(Base):
     group_id = Column(Integer, ForeignKey('groups.id'))
     user_id = Column(Integer, ForeignKey('users.id'))
     amount = Column(Integer)
-    contribution_date = Column(String, default=datetime.utcnow)    
-    
+    contribution_date = Column(DateTime, default=datetime.utcnow)    
+
+class Poll(Base):
+    __tablename__ = "polls"
+    id = Column(Integer, primary_key=True, index=True)
+    group_id = Column(Integer, ForeignKey('groups.id'))
+    question = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class PollVote(Base):
+    __tablename__ = "poll_votes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    poll_id = Column(Integer, ForeignKey("polls.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    vote = Column(Boolean, nullable=False)  # True = YES, False = NO
+    voted_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("poll_id", "user_id"),  # one vote per user
+    )
+
 
 Base.metadata.create_all(bind=engine)
 
+class PollCreate(BaseModel):
+    group_id: int
+    question: str
+    
+    
+class voteCreate(BaseModel):
+    poll_id: int
+    
+    
+        
 class UserCreate(BaseModel):
     firebase_uid: str
     full_name: str
@@ -65,6 +96,14 @@ class GroupCreate(BaseModel):
     name: str
     description: str
     firebase_uid: str
+
+
+class GroupResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    created_at: str
+    created_by: int    
 
 app = FastAPI()
 
@@ -100,6 +139,7 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     db.refresh(new_user)
     return new_user
 
+# Create group endpoint
 @app.post("/groups/")
 def create_group(group: GroupCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     db_group = db.query(Group).filter(Group.name == group.name).first()
@@ -133,6 +173,7 @@ def create_group(group: GroupCreate, current_user: User = Depends(get_current_us
     }
 
 
+# // Add member to group endpoint
 @app.post("/groups/{group_id}/members/")
 def add_group_member(group_id: int, user_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -146,6 +187,7 @@ def add_group_member(group_id: int, user_id: int, current_user: User = Depends(g
     
     return member
 
+#  Schedule meeting endpoint
 @app.post("/groups/{group_id}/meetings/")
 def schedule_meeting(group_id: int, topic: str, meeting_datetime: datetime, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -159,6 +201,7 @@ def schedule_meeting(group_id: int, topic: str, meeting_datetime: datetime, curr
     
     return meeting
 
+# Record contribution endpoint
 @app.post("/groups/{group_id}/contributions/")
 def record_contribution(group_id: int, amount: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     group = db.query(Group).filter(Group.id == group_id).first()
@@ -172,7 +215,69 @@ def record_contribution(group_id: int, amount: int, current_user: User = Depends
     
     return contribution
 
-@app.get("/groups/", response_model=list[GroupCreate])
+
+
+@app.post("/polls")
+def creat_poll(poll: PollCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    group = db.query(Group).filter(Group.id == poll.group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    new_poll = Poll(
+        group_id=poll.group_id,
+        question=poll.question
+    )
+    db.add(new_poll)
+    db.commit()
+    db.refresh(new_poll)
+    return new_poll
+
+
+@app.post("/polls/{poll_id}/votes")
+def vote_poll(poll_id: int, vote: voteCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    poll = db.query(Poll).filter(Poll.id == poll_id).first()
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+
+    existing_vote = db.query(PollVote).filter(
+        PollVote.poll_id == poll_id,
+        PollVote.user_id == current_user.id
+    ).first()
+
+    if existing_vote:
+        raise HTTPException(status_code=400, detail="User has already voted")
+
+    new_vote = PollVote(
+        poll_id=poll_id,
+        user_id=current_user.id,
+        vote=vote.vote
+    )
+    db.add(new_vote)
+    db.commit()
+    db.refresh(new_vote)
+    return new_vote
+
+
+@app.get("/polls/{poll_id}/results")
+def get_poll_results(poll_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    poll = db.query(Poll).filter(Poll.id == poll_id).first()
+    if not poll:
+        raise HTTPException(status_code=404, detail="Poll not found")
+
+    total_votes = db.query(PollVote).filter(PollVote.poll_id == poll_id).count()
+    yes_votes = db.query(PollVote).filter(PollVote.poll_id == poll_id, PollVote.vote == True).count()
+    no_votes = db.query(PollVote).filter(PollVote.poll_id == poll_id, PollVote.vote == False).count()
+
+    return {
+        "total_votes": total_votes,
+        "yes_votes": yes_votes,
+        "no_votes": no_votes
+    }
+    
+    
+    
+# List groups endpoint
+@app.get("/groups/", response_model=list[GroupResponse])
 def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     # Only fetch groups where the user is a member
     groups = db.query(Group).all()
@@ -189,26 +294,30 @@ def get_groups(current_user: User = Depends(get_current_user), db: Session = Dep
 
 
 
-
+# List group members endpoint
 @app.get("/groups/{group_id}/members/")
 def list_group_members(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     members = db.query(GroupMember).filter(GroupMember.group_id == group_id).all()
     return members
 
+
+# List meetings endpoint
 @app.get("/groups/{group_id}/meetings/")
 def list_meetings(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     meetings = db.query(Meeting).filter(Meeting.group_id == group_id).all()
     return meetings
 
+
+# List contributions endpoint
 @app.get("/groups/{group_id}/contributions/")
 def list_contributions(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     contributions = db.query(Contribution).filter(Contribution.group_id == group_id).all()
     return contributions
 
-@app.get("/groups/")
-def list_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    groups = db.query(Group).all()
-    return groups
+@app.get("/get_current_user/")
+def get_current_user(current_user: User = Depends(get_current_user)):
+    return current_user
+
 
 @app.get("/test/users/")
 def list_users(db: Session = Depends(get_db)):
@@ -226,6 +335,3 @@ def list_all_group_members(db: Session = Depends(get_db)):
     return members
 
 
-@app.get("/get_current_user/")
-def get_current_user(current_user: User = Depends(get_current_user)):
-    return current_user
