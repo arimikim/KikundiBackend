@@ -2,6 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, Header
 from sqlalchemy.orm import Session,declarative_base,sessionmaker
 from sqlalchemy import create_engine, Column, Integer, String,ForeignKey,DateTime
 from datetime import datetime, timedelta
+from pydantic import BaseModel
 
 
 database_url = "sqlite:///./kikundi.db"
@@ -52,6 +53,12 @@ class Contribution(Base):
 
 Base.metadata.create_all(bind=engine)
 
+class UserCreate(BaseModel):
+    firebase_uid: str
+    full_name: str
+    phone: str
+
+
 app = FastAPI()
 
 
@@ -71,16 +78,20 @@ def get_current_user(authorization: str = Header(...), db: Session = Depends(get
     return user        
 
 @app.post("/register/")
-def register_user(firebase_uid: str, full_name: str, phone: str, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter((User.firebase_uid == firebase_uid) | (User.phone == phone)).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="User with given Firebase UID or phone already exists")
+def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.firebase_uid == user.firebase_uid).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="User already registered")
     
-    user = User(firebase_uid=firebase_uid, full_name=full_name, phone=phone)
-    db.add(user)
+    new_user = User(
+        firebase_uid=user.firebase_uid,
+        full_name=user.full_name,
+        phone=user.phone
+    )
+    db.add(new_user)
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(new_user)
+    return new_user
 
 @app.post("/groups/")
 def create_group(name: str, description: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
