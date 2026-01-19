@@ -58,6 +58,9 @@ class UserCreate(BaseModel):
     full_name: str
     phone: str
 
+class GroupCreate(BaseModel):
+    name: str
+    description: str
 
 app = FastAPI()
 
@@ -94,8 +97,8 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
     return new_user
 
 @app.post("/groups/")
-def create_group(name: str, description: str, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    group = Group(name=name, description=description, created_by=current_user.id)
+def create_group(group: GroupCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    group = Group(name=group.name, description=group.description, created_by=current_user.id)
     db.add(group)
     db.commit()
     db.refresh(group)
