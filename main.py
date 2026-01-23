@@ -235,37 +235,81 @@ def create_group(group: GroupCreate, current_user: User = Depends(get_current_us
 @app.get("/groups/")
 def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        user_groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == current_user.id).all()
+        # Get all groups that the current user belongs to
+        user_groups = (
+            db.query(Group)
+            .join(GroupMember)
+            .filter(GroupMember.user_id == current_user.id)
+            .all()
+        )
+
         result = []
+
         for group in user_groups:
-            members_query = db.query(GroupMember, User).join(User).filter(GroupMember.group_id == group.id).all()
-            member_list = [{
-                "id": user.id, "name": user.full_name,
-                "role": "admin" if user.id == group.created_by else "member",
-                "joined_at": member.joined_at.isoformat()
-            } for member, user in members_query]
-            
-            contributions_query = db.query(Contribution, User).join(User).filter(Contribution.group_id == group.id).all()
+            # Members of the group
+            members_query = (
+                db.query(GroupMember, User)
+                .join(User, GroupMember.user_id == User.id)
+                .filter(GroupMember.group_id == group.id)
+                .all()
+            )
+            member_list = [
+                {
+                    "id": user.id,
+                    "name": user.full_name,
+                    "role": "admin" if user.id == group.created_by else "member",
+                    "joined_at": to_iso(member.joined_at),
+                }
+                for member, user in members_query
+            ]
+
+            # Contributions of the group
+            contributions_query = (
+                db.query(Contribution, User)
+                .join(User, Contribution.user_id == User.id)
+                .filter(Contribution.group_id == group.id)
+                .all()
+            )
             contributions_map = {}
             for contrib, user in contributions_query:
                 contributions_map[user.full_name] = contributions_map.get(user.full_name, 0.0) + float(contrib.amount)
-            
-            transactions_query = db.query(Contribution, User).join(User).filter(
-                Contribution.group_id == group.id
-            ).order_by(Contribution.contribution_date.desc()).all()
-            
-            transaction_list = [{
-                "id": contrib.id, "user_name": user.full_name, "user_id": user.id,
-                "amount": float(contrib.amount), "date": contrib.contribution_date.isoformat(),
-                "type": "contribution"
-            } for contrib, user in transactions_query]
-            
-            result.append({
-                "id": group.id, "name": group.name, "description": group.description,
-                "created_at": group.created_at.isoformat(), "created_by": group.created_by,
-                "members": member_list, "contributions": contributions_map, "transactions": transaction_list
-            })
+
+            # Transaction history
+            transactions_query = (
+                db.query(Contribution, User)
+                .join(User, Contribution.user_id == User.id)
+                .filter(Contribution.group_id == group.id)
+                .order_by(Contribution.contribution_date.desc())
+                .all()
+            )
+            transaction_list = [
+                {
+                    "id": contrib.id,
+                    "user_name": user.full_name,
+                    "user_id": user.id,
+                    "amount": float(contrib.amount),
+                    "date": to_iso(contrib.contribution_date),
+                    "type": "contribution",
+                }
+                for contrib, user in transactions_query
+            ]
+
+            # Build final group object
+            result.append(
+                {
+                    "id": group.id,
+                    "name": group.name,
+                    "description": group.description,
+                    "created_at": to_iso(group.created_at),
+                    "created_by": group.created_by,
+                    "members": member_list,
+                    "contributions": contributions_map,
+                    "transactions": transaction_list,
+                }
+            )
+
         return result
+
     except Exception as e:
         logger.error(f"Error fetching groups: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch groups")
