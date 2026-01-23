@@ -211,66 +211,26 @@ def get_user_info(current_user: User = Depends(get_current_user)):
 
 # ===================== GROUP ENDPOINTS =====================
 
-@app.get("/groups/")
-def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@app.post("/groups/", response_model=GroupResponse, status_code=201)
+def create_group(group: GroupCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        # Get all groups that the current user belongs to
-        user_groups = db.query(Group).join(GroupMember, Group.id == GroupMember.group_id)\
-                                      .filter(GroupMember.user_id == current_user.id).all()
-        result = []
-
-        for group in user_groups:
-            # Explicit join for members
-            members_query = db.query(GroupMember, User)\
-                              .join(User, GroupMember.user_id == User.id)\
-                              .filter(GroupMember.group_id == group.id).all()
-            member_list = []
-            for member, user in members_query:
-                if not member or not user:
-                    continue
-                member_list.append({
-                    "id": user.id,
-                    "name": user.full_name,
-                    "role": "admin" if user.id == group.created_by else "member",
-                    "joined_at": member.joined_at.isoformat() if member.joined_at else None
-                })
-
-            # Explicit join for contributions
-            contributions_query = db.query(Contribution, User)\
-                                    .join(User, Contribution.user_id == User.id)\
-                                    .filter(Contribution.group_id == group.id).all()
-            contributions_map = {}
-            transaction_list = []
-            for contrib, user in contributions_query:
-                if not contrib or not user:
-                    continue
-                # Aggregate contributions
-                contributions_map[user.full_name] = contributions_map.get(user.full_name, 0.0) + float(contrib.amount)
-                # Transaction history
-                transaction_list.append({
-                    "id": contrib.id,
-                    "user_name": user.full_name,
-                    "user_id": user.id,
-                    "amount": float(contrib.amount),
-                    "date": contrib.contribution_date.isoformat(),
-                    "type": "contribution"
-                })
-
-            result.append({
-                "id": group.id,
-                "name": group.name,
-                "description": group.description,
-                "created_at": group.created_at.isoformat() if group.created_at else None,
-                "created_by": group.created_by,
-                "members": member_list,
-                "contributions": contributions_map,
-                "transactions": transaction_list
-            })
-
-        return result
+        if db.query(Group).filter(Group.name == group.name).first():
+            raise HTTPException(status_code=400, detail="Group name already exists")
+        new_group = Group(name=group.name, description=group.description, created_by=current_user.id)
+        db.add(new_group)
+        db.commit()
+        db.refresh(new_group)
+        member = GroupMember(group_id=new_group.id, user_id=current_user.id)
+        db.add(member)
+        db.commit()
+        logger.info(f"Group created: {new_group.id}")
+        return new_group
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error fetching groups: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch groups")
+        db.rollback()
+        logger.error(f"Error creating group: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create group")
 
 @app.get("/groups/")
 def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
