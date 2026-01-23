@@ -7,17 +7,6 @@ from pydantic import BaseModel, Field, validator
 from dotenv import load_dotenv
 import os
 import logging
-import firebase_admin
-from firebase_admin import credentials, auth
-import json
-
-
-service_account_info = os.getenv("serivice_account")
-if not service_account_info:
-    raise Exception("Firebase service account JSON not found in environment variables")
-
-cred = credentials.Certificate(json.loads(service_account_info))
-firebase_admin.initialize_app(cred)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -169,10 +158,7 @@ def get_db():
 
 def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
     try:
-        token = authorization.replace("Bearer","").strip()
-        decoded = auth.verify_id_token(token)
-        firebase_uid =decoded["uid"]
-        
+        firebase_uid = authorization.replace("Bearer ", "").strip()
         if not firebase_uid:
             raise HTTPException(status_code=401, detail="Invalid authorization header")
         user = db.query(User).filter(User.firebase_uid == firebase_uid).first()
@@ -225,72 +211,51 @@ def get_user_info(current_user: User = Depends(get_current_user)):
 
 # ===================== GROUP ENDPOINTS =====================
 
-@app.post("/groups/", response_model=GroupResponse, status_code=201)
-def create_group(group: GroupCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    try:
-        if db.query(Group).filter(Group.name == group.name).first():
-            raise HTTPException(status_code=400, detail="Group name already exists")
-        new_group = Group(name=group.name, description=group.description, created_by=current_user.id)
-        db.add(new_group)
-        db.commit()
-        db.refresh(new_group)
-        member = GroupMember(group_id=new_group.id, user_id=current_user.id)
-        db.add(member)
-        db.commit()
-        logger.info(f"Group created: {new_group.id}")
-        return new_group
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating group: {e}")
-        raise HTTPException(status_code=500, detail="Failed to create group")
-
 @app.get("/groups/")
 def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        # Fetch groups where the current user is a member
-        user_groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == current_user.id).all()
+        # Get all groups that the current user belongs to
+        user_groups = db.query(Group).join(GroupMember, Group.id == GroupMember.group_id)\
+                                      .filter(GroupMember.user_id == current_user.id).all()
         result = []
 
         for group in user_groups:
-            # Fetch members with explicit join
+            # Explicit join for members
             members_query = db.query(GroupMember, User)\
-                .join(User, GroupMember.user_id == User.id)\
-                .filter(GroupMember.group_id == group.id).all()
-            
-            member_list = [{
-                "id": user.id,
-                "name": user.full_name,
-                "role": "admin" if user.id == group.created_by else "member",
-                "joined_at": member.joined_at.isoformat() if member.joined_at else None
-            } for member, user in members_query]
+                              .join(User, GroupMember.user_id == User.id)\
+                              .filter(GroupMember.group_id == group.id).all()
+            member_list = []
+            for member, user in members_query:
+                if not member or not user:
+                    continue
+                member_list.append({
+                    "id": user.id,
+                    "name": user.full_name,
+                    "role": "admin" if user.id == group.created_by else "member",
+                    "joined_at": member.joined_at.isoformat() if member.joined_at else None
+                })
 
-            # Fetch contributions with explicit join
+            # Explicit join for contributions
             contributions_query = db.query(Contribution, User)\
-                .join(User, Contribution.user_id == User.id)\
-                .filter(Contribution.group_id == group.id).all()
-
+                                    .join(User, Contribution.user_id == User.id)\
+                                    .filter(Contribution.group_id == group.id).all()
             contributions_map = {}
+            transaction_list = []
             for contrib, user in contributions_query:
+                if not contrib or not user:
+                    continue
+                # Aggregate contributions
                 contributions_map[user.full_name] = contributions_map.get(user.full_name, 0.0) + float(contrib.amount)
+                # Transaction history
+                transaction_list.append({
+                    "id": contrib.id,
+                    "user_name": user.full_name,
+                    "user_id": user.id,
+                    "amount": float(contrib.amount),
+                    "date": contrib.contribution_date.isoformat(),
+                    "type": "contribution"
+                })
 
-            # Fetch transactions with explicit join and ordering
-            transactions_query = db.query(Contribution, User)\
-                .join(User, Contribution.user_id == User.id)\
-                .filter(Contribution.group_id == group.id)\
-                .order_by(Contribution.contribution_date.desc()).all()
-
-            transaction_list = [{
-                "id": contrib.id,
-                "user_name": user.full_name,
-                "user_id": user.id,
-                "amount": float(contrib.amount),
-                "date": contrib.contribution_date.isoformat() if contrib.contribution_date else None,
-                "type": "contribution"
-            } for contrib, user in transactions_query]
-
-            # Append group details to result
             result.append({
                 "id": group.id,
                 "name": group.name,
@@ -303,7 +268,44 @@ def get_groups(current_user: User = Depends(get_current_user), db: Session = Dep
             })
 
         return result
+    except Exception as e:
+        logger.error(f"Error fetching groups: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch groups")
 
+@app.get("/groups/")
+def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        user_groups = db.query(Group).join(GroupMember).filter(GroupMember.user_id == current_user.id).all()
+        result = []
+        for group in user_groups:
+            members_query = db.query(GroupMember, User).join(User).filter(GroupMember.group_id == group.id).all()
+            member_list = [{
+                "id": user.id, "name": user.full_name,
+                "role": "admin" if user.id == group.created_by else "member",
+                "joined_at": member.joined_at.isoformat()
+            } for member, user in members_query]
+            
+            contributions_query = db.query(Contribution, User).join(User).filter(Contribution.group_id == group.id).all()
+            contributions_map = {}
+            for contrib, user in contributions_query:
+                contributions_map[user.full_name] = contributions_map.get(user.full_name, 0.0) + float(contrib.amount)
+            
+            transactions_query = db.query(Contribution, User).join(User).filter(
+                Contribution.group_id == group.id
+            ).order_by(Contribution.contribution_date.desc()).all()
+            
+            transaction_list = [{
+                "id": contrib.id, "user_name": user.full_name, "user_id": user.id,
+                "amount": float(contrib.amount), "date": contrib.contribution_date.isoformat(),
+                "type": "contribution"
+            } for contrib, user in transactions_query]
+            
+            result.append({
+                "id": group.id, "name": group.name, "description": group.description,
+                "created_at": group.created_at.isoformat(), "created_by": group.created_by,
+                "members": member_list, "contributions": contributions_map, "transactions": transaction_list
+            })
+        return result
     except Exception as e:
         logger.error(f"Error fetching groups: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch groups")
