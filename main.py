@@ -12,7 +12,7 @@ from firebase_admin import credentials, auth
 import json
 
 
-service_account_info = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+service_account_info = os.getenv("serivice_account")
 if not service_account_info:
     raise Exception("Firebase service account JSON not found in environment variables")
 
