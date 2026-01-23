@@ -7,6 +7,11 @@ from pydantic import BaseModel, Field, validator
 from dotenv import load_dotenv
 import os
 import logging
+import firebase_admin
+from firebase_admin import credentials, auth
+
+cred = credentials.Certificate("firebase-service-account.json")
+firebase_admin.initialize_app(cred)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -158,7 +163,10 @@ def get_db():
 
 def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
     try:
-        firebase_uid = authorization.replace("Bearer ", "").strip()
+        token = authorization.replace("Bearer","").strip()
+        decoded = auth.verify_id_token(token)
+        firebase_uid =decoded["uid"]
+        
         if not firebase_uid:
             raise HTTPException(status_code=401, detail="Invalid authorization header")
         user = db.query(User).filter(User.firebase_uid == firebase_uid).first()
