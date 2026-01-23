@@ -9,8 +9,14 @@ import os
 import logging
 import firebase_admin
 from firebase_admin import credentials, auth
+import json
 
-cred = credentials.Certificate("firebase-service-account.json")
+
+service_account_info = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+if not service_account_info:
+    raise Exception("Firebase service account JSON not found in environment variables")
+
+cred = credentials.Certificate(json.loads(service_account_info))
 firebase_admin.initialize_app(cred)
 
 # Configure logging
