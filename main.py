@@ -446,9 +446,57 @@ def record_contribution(
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error recording contribution: {str(e)}")
+        logger.error(f"Error recording contribution: {str(e)}"
+                     )
         # Providing the actual error in the detail can help debugging (optional)
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}"
+                            )
+        
+        from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List
+
+@app.get("/groups/{group_id}/contributions/", status_code=200)
+def list_contributions(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        # 1. Check if the group exists
+        group = db.query(Group).filter(Group.id == group_id).first()
+        if not group:
+            raise HTTPException(status_code=404, detail="Group not found")
+        
+        # 2. Ensure the user is a member
+        if not verify_group_membership(group_id, current_user.id, db):
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        
+        # 3. Fetch contributions for this group
+        contributions = db.query(Contribution).filter(Contribution.group_id == group_id).all()
+        
+        # 4. Format the response
+        result = []
+        for c in contributions:
+            c_date = c.contribution_date
+            formatted_date = c_date.isoformat() if hasattr(c_date, 'isoformat') else str(c_date)
+            result.append({
+                "id": c.id,
+                "group_id": c.group_id,
+                "user_id": c.user_id,
+                "user_name": db.query(User).filter(User.id == c.user_id).first().full_name,
+                "amount": float(c.amount),
+                "contribution_date": formatted_date
+            })
+        
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching contributions: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
 # ===================== MEETING ENDPOINTS =====================
 
 @app.post("/groups/{group_id}/meetings/", status_code=201)
