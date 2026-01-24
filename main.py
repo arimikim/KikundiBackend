@@ -233,7 +233,9 @@ def create_group(group: GroupCreate, current_user: User = Depends(get_current_us
         raise HTTPException(status_code=500, detail="Failed to create group")
 
 @app.get("/groups/")
-def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_groups(
+    current_user: User = Depends(get_current_user),
+               db: Session = Depends(get_db)):
     try:
         # Get all groups that the current user belongs to
         user_groups = (
@@ -242,9 +244,7 @@ def get_groups(current_user: User = Depends(get_current_user), db: Session = Dep
             .filter(GroupMember.user_id == current_user.id)
             .all()
         )
-
         result = []
-
         for group in user_groups:
             # Members of the group
             members_query = (
@@ -262,7 +262,6 @@ def get_groups(current_user: User = Depends(get_current_user), db: Session = Dep
                 }
                 for member, user in members_query
             ]
-
             # Contributions of the group
             contributions_query = (
                 db.query(Contribution, User)
@@ -273,7 +272,6 @@ def get_groups(current_user: User = Depends(get_current_user), db: Session = Dep
             contributions_map = {}
             for contrib, user in contributions_query:
                 contributions_map[user.full_name] = contributions_map.get(user.full_name, 0.0) + float(contrib.amount)
-
             # Transaction history
             transactions_query = (
                 db.query(Contribution, User)
@@ -307,30 +305,41 @@ def get_groups(current_user: User = Depends(get_current_user), db: Session = Dep
                     "transactions": transaction_list,
                 }
             )
-
         return result
-
     except Exception as e:
         logger.error(f"Error fetching groups: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch groups")
 
 @app.delete("/groups/{group_id}/")
-def delete_group(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_group(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     try:
         group = db.query(Group).filter(Group.id == group_id).first()
+
         if not group:
             raise HTTPException(status_code=404, detail="Group not found")
+
         if group.created_by != current_user.id:
             raise HTTPException(status_code=403, detail="Only the group creator can delete the group")
+
+        # Optional: check if group has members
+        member_count = db.query(GroupMember).filter(GroupMember.group_id == group_id).count()
+        if member_count > 0:
+            raise HTTPException(status_code=400, detail="Cannot delete a group with members")
+
         db.delete(group)
         db.commit()
-        logger.info(f"Group deleted: {group_id}")
+        logger.info(f"User {current_user.id} deleted group {group_id}")
         return {"message": "Group deleted successfully"}
+
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error deleting group: {e}")
+        logger.error(f"Error deleting group {group_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete group")
 
 # ===================== MEMBER ENDPOINTS =====================
@@ -371,9 +380,16 @@ def list_group_members(group_id: int, current_user: User = Depends(get_current_u
         if not verify_group_membership(group_id, current_user.id, db):
             raise HTTPException(status_code=403, detail="You are not a member of this group")
         members = db.query(GroupMember, User).join(User).filter(GroupMember.group_id == group_id).all()
-        return [{"id": user.id, "name": user.full_name, "phone": user.phone,
-                 "role": "admin" if user.id == group.created_by else "member",
-                 "joined_at": member.joined_at.isoformat()} for member, user in members]
+        return [
+    {
+        "id": user.id,
+        "name": user.full_name,
+        "phone": user.phone,
+        "role": "admin" if user.id == group.created_by else "member",
+        "joined_at": datetime.fromisoformat(member.joined_at).isoformat() if isinstance(member.joined_at, str) else member.joined_at.isoformat()
+    }
+    for member, user in members
+]
     except HTTPException:
         raise
     except Exception as e:
