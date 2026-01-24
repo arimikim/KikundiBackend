@@ -512,14 +512,14 @@ def schedule_meeting(group_id: int, meeting: MeetingCreate, current_user: User =
         db.refresh(new_meeting)
         logger.info(f"Meeting scheduled: {new_meeting.id}")
         return {
-            "id": new_meeting.id, 
-            "group_id": new_meeting.group_id,
-            "topic": new_meeting.topic,
-            "meeting_datetime": new_meeting.meeting_datetime.isoformat()
-            if hasattr(new_meeting.meeting_datetime, 'isoformat') 
-            else new_meeting.meeting_datetime,      
-            "created_at": new_meeting.created_at.isoformat()
-            }
+    "id": new_meeting.id,
+    "group_id": new_meeting.group_id,
+    "topic": new_meeting.topic,
+    "meeting_datetime": new_meeting.meeting_datetime.isoformat(),
+    "created_at": new_meeting.created_at.isoformat()
+}
+
+
     except HTTPException:
         raise
     except Exception as e:
