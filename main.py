@@ -399,27 +399,56 @@ def list_group_members(group_id: int, current_user: User = Depends(get_current_u
 # ===================== CONTRIBUTION ENDPOINTS =====================
 
 @app.post("/groups/{group_id}/contributions/", status_code=201)
-def record_contribution(group_id: int, contribution: ContributionCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def record_contribution(
+    group_id: int, 
+    contribution: ContributionCreate, 
+    current_user: User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
     try:
+        # 1. Validation checks
         if not db.query(Group).filter(Group.id == group_id).first():
             raise HTTPException(status_code=404, detail="Group not found")
+            
         if not verify_group_membership(group_id, current_user.id, db):
             raise HTTPException(status_code=403, detail="You are not a member of this group")
-        new_contribution = Contribution(group_id=group_id, user_id=current_user.id, amount=contribution.amount)
+
+        # 2. Create the record 
+        # Ensure contribution_date is handled by the DB default or passed as a datetime object
+        new_contribution = Contribution(
+            group_id=group_id, 
+            user_id=current_user.id, 
+            amount=contribution.amount
+        )
+        
         db.add(new_contribution)
         db.commit()
         db.refresh(new_contribution)
+        
         logger.info(f"Contribution recorded: {new_contribution.id}")
-        return {"id": new_contribution.id, "group_id": new_contribution.group_id, "user_id": new_contribution.user_id,
-                "user_name": current_user.full_name, "amount": float(new_contribution.amount),
-                "contribution_date": new_contribution.contribution_date.isoformat()}
+
+        # 3. Safe Formatting logic
+        # We check if it's already a string; if not, we call .isoformat()
+        c_date = new_contribution.contribution_date
+        formatted_date = c_date.isoformat() if hasattr(c_date, 'isoformat') else str(c_date)
+
+        return {
+            "id": new_contribution.id, 
+            "group_id": new_contribution.group_id, 
+            "user_id": new_contribution.user_id,
+            "user_name": current_user.full_name, 
+            "amount": float(new_contribution.amount),
+            "contribution_date": formatted_date
+        }
+
     except HTTPException:
+        # Re-raise FastAPI's own exceptions so they aren't caught by the general Exception block
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error recording contribution: {e}")
-        raise HTTPException(status_code=500, detail="Failed to record contribution")
-
+        logger.error(f"Error recording contribution: {str(e)}")
+        # Providing the actual error in the detail can help debugging (optional)
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 # ===================== MEETING ENDPOINTS =====================
 
 @app.post("/groups/{group_id}/meetings/", status_code=201)
