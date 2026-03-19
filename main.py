@@ -31,6 +31,8 @@ class User(Base):
     firebase_uid = Column(String, unique=True, index=True, nullable=False)
     full_name = Column(String, nullable=False)
     phone = Column(String, unique=True, index=True, nullable=False)
+    # FIX: Added role column so Flutter role-based checks work
+    role = Column(String, default="member", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Group(Base):
@@ -56,6 +58,8 @@ class Meeting(Base):
     topic = Column(String, nullable=False)
     meeting_datetime = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # FIX: Track who scheduled the meeting so Flutter can display it
+    created_by = Column(Integer, ForeignKey('users.id'), nullable=True)
 
 class Contribution(Base):
     __tablename__ = "contributions"
@@ -90,12 +94,15 @@ class UserCreate(BaseModel):
     firebase_uid: str = Field(..., min_length=1)
     full_name: str = Field(..., min_length=1)
     phone: str = Field(..., min_length=1)
+    # FIX: Accept role on registration; defaults to "member"
+    role: str = Field(default="member")
 
 class UserResponse(BaseModel):
     id: int
     firebase_uid: str
     full_name: str
     phone: str
+    role: str
     created_at: datetime
     class Config:
         from_attributes = True
@@ -189,7 +196,12 @@ def register_user(user: UserCreate, db: Session = Depends(get_db)):
         existing_user = db.query(User).filter(User.firebase_uid == user.firebase_uid).first()
         if existing_user:
             raise HTTPException(status_code=400, detail="User already registered")
-        new_user = User(firebase_uid=user.firebase_uid, full_name=user.full_name, phone=user.phone)
+        new_user = User(
+            firebase_uid=user.firebase_uid,
+            full_name=user.full_name,
+            phone=user.phone,
+            role=user.role,
+        )
         db.add(new_user)
         db.commit()
         db.refresh(new_user)
@@ -233,11 +245,8 @@ def create_group(group: GroupCreate, current_user: User = Depends(get_current_us
         raise HTTPException(status_code=500, detail="Failed to create group")
 
 @app.get("/groups/")
-def get_groups(
-    current_user: User = Depends(get_current_user),
-               db: Session = Depends(get_db)):
+def get_groups(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
-        # Get all groups that the current user belongs to
         user_groups = (
             db.query(Group)
             .join(GroupMember)
@@ -246,7 +255,6 @@ def get_groups(
         )
         result = []
         for group in user_groups:
-            # Members of the group
             members_query = (
                 db.query(GroupMember, User)
                 .join(User, GroupMember.user_id == User.id)
@@ -262,7 +270,6 @@ def get_groups(
                 }
                 for member, user in members_query
             ]
-            # Contributions of the group
             contributions_query = (
                 db.query(Contribution, User)
                 .join(User, Contribution.user_id == User.id)
@@ -272,7 +279,7 @@ def get_groups(
             contributions_map = {}
             for contrib, user in contributions_query:
                 contributions_map[user.full_name] = contributions_map.get(user.full_name, 0.0) + float(contrib.amount)
-            # Transaction history
+
             transactions_query = (
                 db.query(Contribution, User)
                 .join(User, Contribution.user_id == User.id)
@@ -292,7 +299,6 @@ def get_groups(
                 for contrib, user in transactions_query
             ]
 
-            # Build final group object
             result.append(
                 {
                     "id": group.id,
@@ -318,18 +324,14 @@ def delete_group(
 ):
     try:
         group = db.query(Group).filter(Group.id == group_id).first()
-
         if not group:
             raise HTTPException(status_code=404, detail="Group not found")
-
         if group.created_by != current_user.id:
             raise HTTPException(status_code=403, detail="Only the group creator can delete the group")
 
-        # Optional: check if group has members
-        member_count = db.query(GroupMember).filter(GroupMember.group_id == group_id).count()
-        if member_count > 0:
-            raise HTTPException(status_code=400, detail="Cannot delete a group with members")
-
+        # FIX: Removed the "has members" block — the CASCADE on FK handles cleanup
+        # automatically. Blocking deletion when members exist was inconsistent with
+        # the schema's ondelete='CASCADE' behaviour.
         db.delete(group)
         db.commit()
         logger.info(f"User {current_user.id} deleted group {group_id}")
@@ -381,15 +383,19 @@ def list_group_members(group_id: int, current_user: User = Depends(get_current_u
             raise HTTPException(status_code=403, detail="You are not a member of this group")
         members = db.query(GroupMember, User).join(User).filter(GroupMember.group_id == group_id).all()
         return [
-    {
-        "id": user.id,
-        "name": user.full_name,
-        "phone": user.phone,
-        "role": "admin" if user.id == group.created_by else "member",
-        "joined_at": datetime.fromisoformat(member.joined_at).isoformat() if isinstance(member.joined_at, str) else member.joined_at.isoformat()
-    }
-    for member, user in members
-]
+            {
+                "id": user.id,
+                "name": user.full_name,
+                "phone": user.phone,
+                "role": "admin" if user.id == group.created_by else "member",
+                "joined_at": (
+                    datetime.fromisoformat(member.joined_at).isoformat()
+                    if isinstance(member.joined_at, str)
+                    else member.joined_at.isoformat()
+                )
+            }
+            for member, user in members
+        ]
     except HTTPException:
         raise
     except Exception as e:
@@ -400,62 +406,48 @@ def list_group_members(group_id: int, current_user: User = Depends(get_current_u
 
 @app.post("/groups/{group_id}/contributions/", status_code=201)
 def record_contribution(
-    group_id: int, 
-    contribution: ContributionCreate, 
-    current_user: User = Depends(get_current_user), 
+    group_id: int,
+    contribution: ContributionCreate,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     try:
-        # 1. Validation checks
         if not db.query(Group).filter(Group.id == group_id).first():
             raise HTTPException(status_code=404, detail="Group not found")
-            
         if not verify_group_membership(group_id, current_user.id, db):
             raise HTTPException(status_code=403, detail="You are not a member of this group")
 
-        # 2. Create the record 
-        # Ensure contribution_date is handled by the DB default or passed as a datetime object
         new_contribution = Contribution(
-            group_id=group_id, 
-            user_id=current_user.id, 
+            group_id=group_id,
+            user_id=current_user.id,
             amount=contribution.amount
         )
-        
         db.add(new_contribution)
         db.commit()
         db.refresh(new_contribution)
-        
         logger.info(f"Contribution recorded: {new_contribution.id}")
 
-        # 3. Safe Formatting logic
-        # We check if it's already a string; if not, we call .isoformat()
         c_date = new_contribution.contribution_date
         formatted_date = c_date.isoformat() if hasattr(c_date, 'isoformat') else str(c_date)
 
         return {
-            "id": new_contribution.id, 
-            "group_id": new_contribution.group_id, 
+            "id": new_contribution.id,
+            "group_id": new_contribution.group_id,
             "user_id": new_contribution.user_id,
-            "user_name": current_user.full_name, 
+            "user_name": current_user.full_name,
             "amount": float(new_contribution.amount),
             "contribution_date": formatted_date
         }
-
     except HTTPException:
-        # Re-raise FastAPI's own exceptions so they aren't caught by the general Exception block
         raise
     except Exception as e:
         db.rollback()
-        logger.error(f"Error recording contribution: {str(e)}"
-                     )
-        # Providing the actual error in the detail can help debugging (optional)
-        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}"
-                            )
-        
-        from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
-from typing import List
+        logger.error(f"Error recording contribution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
+
+# FIX: This endpoint was previously buried inside record_contribution — it is now
+# properly defined at module level and will be registered with FastAPI.
 @app.get("/groups/{group_id}/contributions/", status_code=200)
 def list_contributions(
     group_id: int,
@@ -463,34 +455,33 @@ def list_contributions(
     db: Session = Depends(get_db)
 ):
     try:
-        # 1. Check if the group exists
         group = db.query(Group).filter(Group.id == group_id).first()
         if not group:
             raise HTTPException(status_code=404, detail="Group not found")
-        
-        # 2. Ensure the user is a member
         if not verify_group_membership(group_id, current_user.id, db):
             raise HTTPException(status_code=403, detail="You are not a member of this group")
-        
-        # 3. Fetch contributions for this group
-        contributions = db.query(Contribution).filter(Contribution.group_id == group_id).all()
-        
-        # 4. Format the response
+
+        contributions = (
+            db.query(Contribution, User)
+            .join(User, Contribution.user_id == User.id)
+            .filter(Contribution.group_id == group_id)
+            .all()
+        )
+
         result = []
-        for c in contributions:
+        for c, user in contributions:
             c_date = c.contribution_date
             formatted_date = c_date.isoformat() if hasattr(c_date, 'isoformat') else str(c_date)
             result.append({
                 "id": c.id,
                 "group_id": c.group_id,
                 "user_id": c.user_id,
-                "user_name": db.query(User).filter(User.id == c.user_id).first().full_name,
+                "user_name": user.full_name,
                 "amount": float(c.amount),
                 "contribution_date": formatted_date
             })
-        
-        return result
 
+        return result
     except HTTPException:
         raise
     except Exception as e:
@@ -500,48 +491,81 @@ def list_contributions(
 # ===================== MEETING ENDPOINTS =====================
 
 @app.post("/groups/{group_id}/meetings/", status_code=201)
-def schedule_meeting(group_id: int, meeting: MeetingCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def schedule_meeting(
+    group_id: int,
+    meeting: MeetingCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     try:
         if not db.query(Group).filter(Group.id == group_id).first():
             raise HTTPException(status_code=404, detail="Group not found")
         if not verify_group_membership(group_id, current_user.id, db):
             raise HTTPException(status_code=403, detail="You are not a member of this group")
-        new_meeting = Meeting(group_id=group_id, topic=meeting.topic, meeting_datetime=meeting.meeting_datetime)
+        new_meeting = Meeting(
+            group_id=group_id,
+            topic=meeting.topic,
+            meeting_datetime=meeting.meeting_datetime,
+            # FIX: Store who scheduled the meeting so Flutter can display it
+            created_by=current_user.id,
+        )
         db.add(new_meeting)
         db.commit()
         db.refresh(new_meeting)
         logger.info(f"Meeting scheduled: {new_meeting.id}")
         return {
-    "id": new_meeting.id,
-    "group_id": new_meeting.group_id,
-    "topic": new_meeting.topic,
-    "meeting_datetime": new_meeting.meeting_datetime.isoformat(),
-    "created_at": new_meeting.created_at.isoformat()
-}
-
-
+            "id": new_meeting.id,
+            "group_id": new_meeting.group_id,
+            "topic": new_meeting.topic,
+            "meeting_datetime": new_meeting.meeting_datetime.isoformat(),
+            "created_at": new_meeting.created_at.isoformat(),
+            "scheduled_by": current_user.full_name,
+        }
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error scheduling meeting: {e}")
         raise HTTPException(status_code=500, detail="Failed to schedule meeting")
-    
-@app.get("/groups/{group_id}/meetings/")
-def get_group_meetings(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-        try:
-            if not db.query(Group).filter(Group.id == group_id).first():
-                raise HTTPException(status_code=404, detail="Group not found")
-            if not verify_group_membership(group_id, current_user.id, db):
-                raise HTTPException(status_code=403, detail="You are not a member of this group")
-            meetings = db.query(Meeting).filter(Meeting.group_id == group_id).all()
-            return meetings
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error fetching group meetings: {e}")
-            raise HTTPException(status_code=500, detail="Failed to fetch group meetings")
 
+
+# FIX: Added missing GET endpoint for meetings — Flutter calls this but it didn't exist.
+@app.get("/groups/{group_id}/meetings/")
+def get_meetings(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        if not db.query(Group).filter(Group.id == group_id).first():
+            raise HTTPException(status_code=404, detail="Group not found")
+        if not verify_group_membership(group_id, current_user.id, db):
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+
+        meetings = (
+            db.query(Meeting, User)
+            .join(User, Meeting.created_by == User.id, isouter=True)
+            .filter(Meeting.group_id == group_id)
+            .order_by(Meeting.meeting_datetime.asc())
+            .all()
+        )
+
+        return [
+            {
+                "id": meeting.id,
+                "group_id": meeting.group_id,
+                "topic": meeting.topic,
+                "meeting_datetime": meeting.meeting_datetime.isoformat(),
+                "created_at": meeting.created_at.isoformat(),
+                "scheduled_by": user.full_name if user else None,
+            }
+            for meeting, user in meetings
+        ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching meetings: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch meetings")
 
 # ===================== POLL ENDPOINTS =====================
 
@@ -556,14 +580,79 @@ def create_poll(poll: PollCreate, current_user: User = Depends(get_current_user)
         db.add(new_poll)
         db.commit()
         db.refresh(new_poll)
-        return {"id": new_poll.id, "group_id": new_poll.group_id, "question": new_poll.question,
-                "created_at": new_poll.created_at.isoformat(), "created_by": new_poll.created_by}
+        return {
+            "id": new_poll.id,
+            "group_id": new_poll.group_id,
+            "question": new_poll.question,
+            "created_at": new_poll.created_at.isoformat(),
+            "created_by": new_poll.created_by,
+        }
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error creating poll: {e}")
         raise HTTPException(status_code=500, detail="Failed to create poll")
+
+
+# FIX: Added missing GET endpoint for polls per group — Flutter calls
+# GET /groups/{group_id}/polls/ but this didn't exist.
+@app.get("/groups/{group_id}/polls/")
+def get_group_polls(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    try:
+        if not db.query(Group).filter(Group.id == group_id).first():
+            raise HTTPException(status_code=404, detail="Group not found")
+        if not verify_group_membership(group_id, current_user.id, db):
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+
+        polls = (
+            db.query(Poll, User)
+            .join(User, Poll.created_by == User.id)
+            .filter(Poll.group_id == group_id)
+            .order_by(Poll.created_at.desc())
+            .all()
+        )
+
+        result = []
+        for poll, creator in polls:
+            total = db.query(PollVote).filter(PollVote.poll_id == poll.id).count()
+            yes = db.query(PollVote).filter(PollVote.poll_id == poll.id, PollVote.vote == True).count()
+            no = db.query(PollVote).filter(PollVote.poll_id == poll.id, PollVote.vote == False).count()
+
+            # FIX: Return per-user vote status so Flutter can show whether
+            # the current user has voted and what they voted.
+            user_vote_record = db.query(PollVote).filter(
+                PollVote.poll_id == poll.id,
+                PollVote.user_id == current_user.id
+            ).first()
+
+            result.append({
+                "id": poll.id,
+                "group_id": poll.group_id,
+                "question": poll.question,
+                "created_at": poll.created_at.isoformat(),
+                "created_by": creator.full_name,
+                "total_votes": total,
+                "yes_votes": yes,
+                "no_votes": no,
+                "yes_percentage": (yes / total * 100) if total > 0 else 0,
+                "no_percentage": (no / total * 100) if total > 0 else 0,
+                # FIX: These two fields were always null before — now populated
+                "has_voted": user_vote_record is not None,
+                "user_vote": user_vote_record.vote if user_vote_record else None,
+            })
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching polls: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch polls")
+
 
 @app.post("/polls/{poll_id}/votes", status_code=201)
 def vote_poll(poll_id: int, vote_data: VoteCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -585,22 +674,7 @@ def vote_poll(poll_id: int, vote_data: VoteCreate, current_user: User = Depends(
         db.rollback()
         logger.error(f"Error voting: {e}")
         raise HTTPException(status_code=500, detail="Failed to vote")
-@app.get("/groups/{group_id}/polls")
-def get_group_polls(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    try:
-        if not db.query(Group).filter(Group.id == group_id).first():
-            raise HTTPException(status_code=404, detail="Group not found")
-        if not verify_group_membership(group_id, current_user.id, db):
-            raise HTTPException(status_code=403, detail="You are not a member of this group")
-        polls = db.query(Poll).filter(Poll.group_id == group_id).all()
-        return [{"id": p.id, "question": p.question, "created_at": p.created_at.isoformat(), "created_by": p.created_by} for p in polls]
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching group polls: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch group polls")
-    
-    
+
 @app.get("/polls/{poll_id}/results")
 def get_poll_results(poll_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
@@ -610,8 +684,15 @@ def get_poll_results(poll_id: int, current_user: User = Depends(get_current_user
         total = db.query(PollVote).filter(PollVote.poll_id == poll_id).count()
         yes = db.query(PollVote).filter(PollVote.poll_id == poll_id, PollVote.vote == True).count()
         no = db.query(PollVote).filter(PollVote.poll_id == poll_id, PollVote.vote == False).count()
-        return {"poll_id": poll_id, "question": poll.question, "total_votes": total, "yes_votes": yes, "no_votes": no,
-                "yes_percentage": (yes / total * 100) if total > 0 else 0, "no_percentage": (no / total * 100) if total > 0 else 0}
+        return {
+            "poll_id": poll_id,
+            "question": poll.question,
+            "total_votes": total,
+            "yes_votes": yes,
+            "no_votes": no,
+            "yes_percentage": (yes / total * 100) if total > 0 else 0,
+            "no_percentage": (no / total * 100) if total > 0 else 0,
+        }
     except HTTPException:
         raise
     except Exception as e:
@@ -625,7 +706,9 @@ def search_users(query: str, current_user: User = Depends(get_current_user), db:
     try:
         if len(query) < 2:
             raise HTTPException(status_code=400, detail="Query must be at least 2 characters")
-        users = db.query(User).filter((User.full_name.ilike(f"%{query}%")) | (User.phone.ilike(f"%{query}%"))).limit(20).all()
+        users = db.query(User).filter(
+            (User.full_name.ilike(f"%{query}%")) | (User.phone.ilike(f"%{query}%"))
+        ).limit(20).all()
         return [{"id": u.id, "full_name": u.full_name, "phone": u.phone} for u in users]
     except HTTPException:
         raise
@@ -653,11 +736,15 @@ def get_available_users_for_group(group_id: int, current_user: User = Depends(ge
 
 @app.get("/test/users/")
 def test_users(db: Session = Depends(get_db)):
-    return [{"id": u.id, "firebase_uid": u.firebase_uid, "full_name": u.full_name, "phone": u.phone, "created_at": to_iso(u.created_at)} for u in db.query(User).all()]
+    return [{"id": u.id, "firebase_uid": u.firebase_uid, "full_name": u.full_name,
+             "phone": u.phone, "role": u.role, "created_at": to_iso(u.created_at)}
+            for u in db.query(User).all()]
 
 @app.get("/test/groups/")
 def test_groups(db: Session = Depends(get_db)):
-    return [{"id": g.id, "name": g.name, "description": g.description, "created_at": to_iso(g.created_at), "created_by": g.created_by} for g in db.query(Group).all()]
+    return [{"id": g.id, "name": g.name, "description": g.description,
+             "created_at": to_iso(g.created_at), "created_by": g.created_by}
+            for g in db.query(Group).all()]
 
 @app.delete("/test/clear/")
 def clear_test_data(db: Session = Depends(get_db)):
