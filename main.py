@@ -526,6 +526,22 @@ def schedule_meeting(group_id: int, meeting: MeetingCreate, current_user: User =
         db.rollback()
         logger.error(f"Error scheduling meeting: {e}")
         raise HTTPException(status_code=500, detail="Failed to schedule meeting")
+    
+@app.get("/groups/{group_id}/meetings/")
+def get_group_meetings(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+        try:
+            if not db.query(Group).filter(Group.id == group_id).first():
+                raise HTTPException(status_code=404, detail="Group not found")
+            if not verify_group_membership(group_id, current_user.id, db):
+                raise HTTPException(status_code=403, detail="You are not a member of this group")
+            meetings = db.query(Meeting).filter(Meeting.group_id == group_id).all()
+            return meetings
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error fetching group meetings: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch group meetings")
+
 
 # ===================== POLL ENDPOINTS =====================
 
@@ -569,7 +585,22 @@ def vote_poll(poll_id: int, vote_data: VoteCreate, current_user: User = Depends(
         db.rollback()
         logger.error(f"Error voting: {e}")
         raise HTTPException(status_code=500, detail="Failed to vote")
-
+@app.get("/groups/{group_id}/polls")
+def get_group_polls(group_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    try:
+        if not db.query(Group).filter(Group.id == group_id).first():
+            raise HTTPException(status_code=404, detail="Group not found")
+        if not verify_group_membership(group_id, current_user.id, db):
+            raise HTTPException(status_code=403, detail="You are not a member of this group")
+        polls = db.query(Poll).filter(Poll.group_id == group_id).all()
+        return [{"id": p.id, "question": p.question, "created_at": p.created_at.isoformat(), "created_by": p.created_by} for p in polls]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching group polls: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch group polls")
+    
+    
 @app.get("/polls/{poll_id}/results")
 def get_poll_results(poll_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     try:
